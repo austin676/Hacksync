@@ -9,23 +9,24 @@ const users: Map<string, User> = new Map()
 const transactions: Map<string, Transaction> = new Map()
 const auditLogs: AuditLog[] = []
 
-// Pre-configured wallet-to-role mappings (would be in database)
-const walletRoles: Map<string, UserRole> = new Map([
-  // Demo wallets - any wallet can connect, these have preset roles
-  ["0x1234567890123456789012345678901234567890", "admin"],
-  ["0xabcdefabcdefabcdefabcdefabcdefabcdefabcd", "auditor"],
-])
+// Role cache (fetched from contract)
+const roleCache: Map<string, UserRole> = new Map()
 
 let lastAuditHash = "0".repeat(64)
 
+// Set role from contract (called from frontend)
+export function setUserRole(walletAddress: string, role: UserRole): void {
+  roleCache.set(walletAddress.toLowerCase(), role)
+}
+
 // User operations
-export function getOrCreateUser(walletAddress: string): User {
+export function getOrCreateUser(walletAddress: string, contractRole?: UserRole): User {
   const normalizedAddress = walletAddress.toLowerCase()
   let user = users.get(normalizedAddress)
 
   if (!user) {
-    // Determine role - check preset roles or default to 'user'
-    const role = walletRoles.get(normalizedAddress) || "user"
+    // Use role from contract, cache, or default to 'user'
+    const role = contractRole || roleCache.get(normalizedAddress) || "user"
 
     user = {
       id: crypto.randomUUID(),
@@ -36,6 +37,10 @@ export function getOrCreateUser(walletAddress: string): User {
     }
     users.set(normalizedAddress, user)
   } else {
+    // Update role if provided from contract
+    if (contractRole) {
+      user.role = contractRole
+    }
     user.lastLogin = new Date()
     users.set(normalizedAddress, user)
   }

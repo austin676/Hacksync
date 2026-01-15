@@ -3,13 +3,21 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { verifySignature } from "@/lib/crypto"
 import { createToken } from "@/lib/jwt"
-import { getOrCreateUser, addAuditLog } from "@/lib/store"
+import { getOrCreateUser, addAuditLog, setUserRole } from "@/lib/store"
 import { isValidWalletAddress } from "@/lib/mock-blockchain"
 import { challenges } from "../challenge/route"
 
+// Helper to get role from contract (server-side simulation)
+// In production, you'd query the contract directly
+function getContractRole(walletAddress: string): "admin" | "auditor" | "user" {
+  // This will be overridden by frontend contract check
+  // Default to "user" - frontend will update based on contract
+  return "user"
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const { walletAddress, signature } = await request.json()
+    const { walletAddress, signature, contractRole } = await request.json()
 
     if (!walletAddress || !isValidWalletAddress(walletAddress)) {
       return NextResponse.json({ error: "Invalid wallet address" }, { status: 400 })
@@ -41,8 +49,16 @@ export async function POST(request: NextRequest) {
     // Clean up challenge
     challenges.delete(walletAddress.toLowerCase())
 
-    // Get or create user
-    const user = getOrCreateUser(walletAddress)
+    // Use contract role if provided, otherwise default
+    const role = contractRole || getContractRole(walletAddress)
+    
+    // Store role in cache
+    if (contractRole) {
+      setUserRole(walletAddress, contractRole)
+    }
+
+    // Get or create user with role from contract
+    const user = getOrCreateUser(walletAddress, role)
 
     // Create JWT
     const token = await createToken(user.id, user.walletAddress, user.role)

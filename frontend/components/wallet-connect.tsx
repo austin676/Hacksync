@@ -2,11 +2,12 @@
 
 import { useState } from "react"
 import { useAuth } from "@/lib/auth-context"
+import { getUserRole, registerUser, switchToPolygonAmoy, isOnPolygonAmoy } from "@/lib/contract"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Loader2, Wallet, AlertCircle, CheckCircle2 } from "lucide-react"
 
-type ConnectionStep = "idle" | "connecting" | "signing" | "verifying" | "success" | "error"
+type ConnectionStep = "idle" | "connecting" | "switching-network" | "checking" | "registering" | "signing" | "verifying" | "success" | "error"
 
 interface WalletConnectProps {
   onSuccess?: () => void
@@ -17,6 +18,7 @@ export function WalletConnect({ onSuccess }: WalletConnectProps) {
   const [step, setStep] = useState<ConnectionStep>("idle")
   const [error, setError] = useState<string | null>(null)
   const [walletAddress, setWalletAddress] = useState<string | null>(null)
+  const [userRole, setUserRole] = useState<string | null>(null)
 
   const connectWallet = async () => {
     setError(null)
@@ -39,6 +41,45 @@ export function WalletConnect({ onSuccess }: WalletConnectProps) {
 
       const address = accounts[0] as string
       setWalletAddress(address)
+      
+      // Switch to Polygon Amoy network
+      setStep("switching-network")
+      const onCorrectNetwork = await isOnPolygonAmoy()
+      if (!onCorrectNetwork) {
+        const switched = await switchToPolygonAmoy()
+        if (!switched) {
+          throw new Error("Please switch to Polygon Amoy network in MetaMask")
+        }
+      }
+      
+      // Check role from smart contract
+      setStep("checking")
+      let role = "user"
+      
+      try {
+        const contractRole = await getUserRole(address)
+        role = contractRole
+        setUserRole(contractRole)
+        
+        // If not registered on contract, register them
+        if (contractRole === "none") {
+          setStep("registering")
+          try {
+            await registerUser()
+            role = "user"
+            setUserRole("user")
+          } catch (regError) {
+            // User might already be registered or contract not deployed
+            console.log("Registration skipped:", regError)
+            role = "user"
+          }
+        }
+      } catch (contractError) {
+        // Contract might not be deployed yet, continue with default role
+        console.log("Contract check skipped:", contractError)
+        role = "user"
+      }
+
       setStep("signing")
 
       // Get challenge from backend
@@ -52,17 +93,34 @@ export function WalletConnect({ onSuccess }: WalletConnectProps) {
 
       setStep("verifying")
 
-      // Verify signature with backend
-      await login(address, signature as string)
+      // Verify signature with backend (include role from contract)
+      const response = await fetch("/api/auth/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          walletAddress: address, 
+          signature,
+          contractRole: role // Pass role from contract
+        }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || "Authentication failed")
+      }
+
+      const data = await response.json()
+      
+      // Update auth context manually
+      localStorage.setItem("auth_token", data.token)
 
       setStep("success")
       setTimeout(() => {
-        onSuccess?.()
+        window.location.reload() // Refresh to load new auth state
       }, 1000)
     } catch (err) {
       setStep("error")
       if (err instanceof Error) {
-        // Handle user rejection
         if (err.message.includes("User rejected") || err.message.includes("User denied")) {
           setError("Connection cancelled. Please try again.")
         } else {
@@ -82,6 +140,24 @@ export function WalletConnect({ onSuccess }: WalletConnectProps) {
           title: "Connecting Wallet",
           description: "Please approve the connection request in MetaMask...",
         }
+      case "switching-network":
+        return {
+          icon: <Loader2 className="h-8 w-8 animate-spin text-primary" />,
+          title: "Switching to Polygon Amoy",
+          description: "Please approve the network switch in MetaMask...",
+        }
+      case "checking":
+        return {
+          icon: <Loader2 className="h-8 w-8 animate-spin text-primary" />,
+          title: "Checking Role",
+          description: "Verifying your role from smart contract...",
+        }
+      case "registering":
+        return {
+          icon: <Loader2 className="h-8 w-8 animate-spin text-primary" />,
+          title: "Registering User",
+          description: "Please confirm the registration transaction...",
+        }
       case "signing":
         return {
           icon: <Loader2 className="h-8 w-8 animate-spin text-primary" />,
@@ -96,9 +172,9 @@ export function WalletConnect({ onSuccess }: WalletConnectProps) {
         }
       case "success":
         return {
-          icon: <CheckCircle2 className="h-8 w-8 text-success" />,
+          icon: <CheckCircle2 className="h-8 w-8 text-green-500" />,
           title: "Connected!",
-          description: `Wallet ${walletAddress?.slice(0, 6)}...${walletAddress?.slice(-4)} authenticated`,
+          description: `Wallet ${walletAddress?.slice(0, 6)}...${walletAddress?.slice(-4)} authenticated as ${userRole || "user"}`,
         }
       case "error":
         return {
